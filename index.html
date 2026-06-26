@@ -10,7 +10,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<!-- Uploads go to Cloudinary (unsigned preset). Auth + Firestore stay on Firebase. -->
+<!-- Files upload to Cloudinary (unsigned preset). Auth + Firestore stay on Firebase. -->
 <style>
   :root{
     --bg:#0a0607;
@@ -740,32 +740,22 @@ const firebaseConfig = {
 let fbDb = null, fbAuth = null;
 try {
   firebase.initializeApp(firebaseConfig);
-  fbDb      = firebase.firestore();
-  fbAuth    = firebase.auth();
-  // Session-scoped persistence: admin is signed out when the tab closes.
+  fbDb   = firebase.firestore();
+  fbAuth = firebase.auth();
   fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(()=>{});
 } catch(e) {
   console.error('Firebase init failed — falling back to local-only mode.', e);
 }
-// FIREBASE_READY kept for any guard checks elsewhere in this file.
 const FIREBASE_READY = !!(fbDb && fbAuth);
-const STATE_DOC_PATH = ['portfolio','main'];          // Firestore doc holding all site content
-const MEDIA_COLLECTION = 'media';                      // Firestore collection holding media metadata
-const MAX_UPLOAD_BYTES = { image: 15*1024*1024, video: 300*1024*1024, file: 50*1024*1024 };
+const STATE_DOC_PATH    = ['portfolio','main'];
+const MEDIA_COLLECTION  = 'media';
+const MAX_UPLOAD_BYTES  = { image: 15*1024*1024, video: 300*1024*1024, file: 50*1024*1024 };
 
 // --------- CLOUDINARY CONFIG ---------
-// Files are uploaded directly from the browser to Cloudinary using an
-// unsigned upload preset (no server needed, works on GitHub Pages).
-// Steps to set this up:
-//   1. Create a free account at https://cloudinary.com
-//   2. Dashboard → Settings → Upload → Upload presets → Add upload preset
-//      • Signing mode: Unsigned
-//      • Folder: portfolio  (optional but keeps things tidy)
-//      • Save → copy the preset name
-//   3. Copy your Cloud Name from the dashboard top-left
-//   4. Replace the two values below with your own.
-const CLOUDINARY_CLOUD_NAME  = 'YOUR_CLOUD_NAME';   // e.g. 'dxyz123abc'
-const CLOUDINARY_UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET'; // e.g. 'portfolio_unsigned'
+// Uploads go directly from the browser to Cloudinary via an unsigned preset.
+// No Firebase Storage, no CORS issues, works on GitHub Pages with no paid plan.
+const CLOUDINARY_CLOUD_NAME    = 'dyo0nin84';
+const CLOUDINARY_UPLOAD_PRESET = 'portfolio_upload';
 
 // --------- ONE-TIME STARTUP DIAGNOSTICS ---------
 (function runFirebaseDiagnostics(){
@@ -777,11 +767,11 @@ const CLOUDINARY_UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET'; // e.g. 'portfolio_unsign
       console.log('[Firebase diag] projectId:', app.options.projectId);
       console.log('[Firebase diag] authDomain:', app.options.authDomain);
     }
-    console.log('[Firebase diag] fbDb attached to same app as default app:', !!fbDb && fbDb.app === app);
-    console.log('[Firebase diag] fbAuth attached to same app as default app:', !!fbAuth && fbAuth.app === app);
-    console.log('[Firebase diag] Cloudinary cloud name:', CLOUDINARY_CLOUD_NAME);
-    console.log('[Firebase diag] Cloudinary upload preset:', CLOUDINARY_UPLOAD_PRESET);
-  }catch(e){ console.error('[Firebase diag] diagnostics crashed:', e); }
+    console.log('[Firebase diag] fbDb:', !!fbDb);
+    console.log('[Firebase diag] fbAuth:', !!fbAuth);
+    console.log('[Firebase diag] Cloudinary cloud:', CLOUDINARY_CLOUD_NAME);
+    console.log('[Firebase diag] Cloudinary preset:', CLOUDINARY_UPLOAD_PRESET);
+  }catch(e){ console.error('[Firebase diag] crashed:', e); }
 })();
 
 // Tracks the signed-in Firebase user. Populated/cleared by onAuthStateChanged
@@ -892,10 +882,8 @@ function attachRealtimeStateListener(){
 }
 
 // --------- MEDIA LIBRARY ---------
-// Media items are plain records: { id, name, type, dataUrl, size, createdAt, cloudinaryPublicId }.
-// The admin uploads files from their device; bytes go directly to Cloudinary
-// (unsigned preset, no server needed). The returned URL is stored in Firestore
-// so every visitor sees the latest media in real time via the existing listener.
+// Media items: { id, name, type, dataUrl, size, createdAt, cloudinaryPublicId }.
+// dataUrl is the Cloudinary secure_url saved to Firestore — loaded by every visitor.
 let mediaDB = null;
 function openMediaDB(){
   return new Promise((res,rej)=>{
@@ -915,23 +903,21 @@ function idbPut(obj){ return new Promise((res,rej)=>{ const tx=mediaDB.transacti
 function idbGetAll(){ return new Promise((res,rej)=>{ const req=mediaDB.transaction('files','readonly').objectStore('files').getAll(); req.onsuccess=e=>res(e.target.result); req.onerror=rej; }); }
 function idbDelete(id){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').delete(id).onsuccess=()=>res(); tx.onerror=rej; }); }
 
-// Saves a Cloudinary-uploaded file's metadata to Firestore + IndexedDB.
-// dataUrl is the Cloudinary delivery URL; cloudinaryPublicId is kept so the
-// file can be deleted from Cloudinary later if needed (via the Cloudinary dashboard).
+// Saves Cloudinary upload metadata to Firestore + IndexedDB cache.
+// dataUrl is the Cloudinary HTTPS delivery URL used everywhere on the site.
 async function dbPut(obj){
   const record = {
-    id: obj.id,
-    name: obj.name || 'untitled',
-    type: obj.type || 'image',
-    dataUrl: obj.dataUrl,                           // Cloudinary delivery URL
-    cloudinaryPublicId: obj.cloudinaryPublicId || null,
-    size: obj.size || 0,
-    createdAt: Date.now()
+    id:                 obj.id,
+    name:               obj.name || 'untitled',
+    type:               obj.type || 'image',
+    dataUrl:            obj.dataUrl,                      // Cloudinary secure_url
+    cloudinaryPublicId: obj.cloudinaryPublicId || null,   // for reference; deletion via Cloudinary dashboard
+    size:               obj.size || 0,
+    createdAt:          Date.now()
   };
   if(!fbDb) return idbPut(record);
   if(!isAuthed()) throw new Error('Not signed in as admin — save rejected.');
   await fbDb.collection(MEDIA_COLLECTION).doc(record.id).set(record);
-  // Also keep a local copy so the library works offline
   if(mediaDB) idbPut(record).catch(()=>{});
   return record;
 }
@@ -947,21 +933,20 @@ async function dbGetAll(){
 async function dbDelete(id){
   if(!fbDb) return idbDelete(id);
   if(!isAuthed()) throw new Error('Not signed in as admin — delete rejected.');
-  // Note: Cloudinary file deletion requires a server-side signed API call and
-  // cannot be done from the browser without exposing the API secret. The file
-  // is removed from the Firestore record and will no longer appear in the site,
-  // but the raw asset stays in your Cloudinary account until you delete it there.
+  // Removes the Firestore record (and local cache). The Cloudinary asset itself
+  // must be deleted manually from the Cloudinary dashboard — browser-side
+  // deletion requires a signed API call that would expose the API secret.
   await fbDb.collection(MEDIA_COLLECTION).doc(id).delete();
   if(mediaDB) idbDelete(id).catch(()=>{});
 }
 
 // --------- FILE UPLOADS — CLOUDINARY ---------
-// Files are posted directly from the browser to Cloudinary's unsigned upload
-// endpoint using a plain FormData/XHR request. No Firebase Storage, no server,
-// no CORS issues, works on GitHub Pages on the free Cloudinary plan.
-//
-// The XHR progress event gives real byte-level progress, so the existing
-// progress bar UI continues to work exactly as before.
+// Posts files directly from the browser to Cloudinary's unsigned upload
+// endpoint using XHR so the progress event gives real byte-level feedback.
+// No Firebase Storage, no SDK conflicts, no CORS configuration needed —
+// Cloudinary's upload API allows browser cross-origin requests by default.
+// After upload, data.secure_url is saved to Firestore so every visitor
+// loads the file from Cloudinary over HTTPS automatically.
 
 function inferKindFromFile(file, fallback){
   if(fallback) return fallback;
@@ -975,27 +960,25 @@ async function uploadFileToStorage(file, kind, onProgress){
     throw new Error('No valid File object provided.');
   }
   if(!isAuthed()){ throw new Error('Not signed in as admin — upload rejected.'); }
-  if(!CLOUDINARY_CLOUD_NAME || CLOUDINARY_CLOUD_NAME === 'YOUR_CLOUD_NAME'){
-    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET in the script.');
+
+  const type  = inferKindFromFile(file, kind);
+  const limit = MAX_UPLOAD_BYTES[type] || MAX_UPLOAD_BYTES.file;
+  if(file.size > limit){
+    throw new Error(`File too large (max ${(limit/1024/1024).toFixed(0)} MB for ${type}).`);
   }
 
-  const type = inferKindFromFile(file, kind);
-  const limit = MAX_UPLOAD_BYTES[type] || MAX_UPLOAD_BYTES.file;
-  if(file.size > limit){ throw new Error(`File too large (max ${(limit/1024/1024).toFixed(0)} MB for ${type}).`); }
-
-  const id = uid();
-
-  // Cloudinary's unsigned upload endpoint accepts multipart/form-data.
-  // resource_type 'auto' lets Cloudinary detect image / video / raw itself.
-  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`;
+  const id   = uid();
+  // resource_type 'auto' lets Cloudinary handle images, videos, and raw files
+  // with the same endpoint — all three upload buttons share this one function.
+  const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`;
   const form = new FormData();
-  form.append('file', file);
-  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-  form.append('public_id', `portfolio/${id}`);  // keeps files in a folder
+  form.append('file',           file);
+  form.append('upload_preset',  CLOUDINARY_UPLOAD_PRESET);
+  form.append('public_id',      `portfolio/${id}`);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', url, true);
+    xhr.open('POST', endpoint, true);
 
     xhr.upload.addEventListener('progress', e => {
       if(e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -1005,16 +988,16 @@ async function uploadFileToStorage(file, kind, onProgress){
       if(xhr.status >= 200 && xhr.status < 300){
         let data;
         try{ data = JSON.parse(xhr.responseText); }
-        catch(e){ reject(new Error('Cloudinary returned non-JSON response.')); return; }
+        catch(_){ reject(new Error('Cloudinary returned a non-JSON response.')); return; }
         if(data.error){ reject(new Error('Cloudinary error: ' + data.error.message)); return; }
         if(onProgress) onProgress(1);
         resolve({
           id,
-          name: file.name,
+          name:               file.name,
           type,
-          dataUrl: data.secure_url,            // HTTPS Cloudinary delivery URL
-          cloudinaryPublicId: data.public_id,  // kept for reference / manual deletion
-          size: file.size
+          dataUrl:            data.secure_url,       // HTTPS URL saved to Firestore + used site-wide
+          cloudinaryPublicId: data.public_id,
+          size:               file.size
         });
       } else {
         let msg = `Cloudinary upload failed (HTTP ${xhr.status}).`;
@@ -1023,8 +1006,10 @@ async function uploadFileToStorage(file, kind, onProgress){
       }
     });
 
-    xhr.addEventListener('error', () => reject(new Error('Network error during Cloudinary upload — check your internet connection.')));
-    xhr.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
+    xhr.addEventListener('error', () =>
+      reject(new Error('Network error during upload — check your internet connection.')));
+    xhr.addEventListener('abort', () =>
+      reject(new Error('Upload cancelled.')));
 
     xhr.send(form);
   });
