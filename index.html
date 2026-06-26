@@ -10,9 +10,13 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<!-- Firebase Storage is NOT used. Media URLs are supplied by the admin as
-     external links (GitHub raw, Cloudinary, Imgur, etc.) and stored as plain
-     text in Firestore alongside the rest of the site data. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<!-- Firebase Storage IS used now. The admin uploads image/video/file media
+     directly from their device via the buttons in the CMS panel; the file
+     bytes go to Firebase Storage and the resulting download URL is stored as
+     plain text in Firestore alongside the rest of the site data, so every
+     visitor's page stays in sync in real time via the existing Firestore
+     listener. -->
 <style>
   :root{
     --bg:#0a0607;
@@ -189,6 +193,25 @@
   .pm-thumb .pm-del{ position:absolute; top:3px; right:3px; width:18px; height:18px; border-radius:4px; border:none; background:rgba(200,30,44,0.9); color:#fff; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:2; }
   .pm-thumb .pm-cover-tag{ position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,.65); color:var(--gold); font-family:var(--mono); font-size:8px; letter-spacing:.05em; text-align:center; padding:2px 0; z-index:1; }
   .pm-empty{ font-size:11px; color:var(--text-faint); font-family:var(--mono); grid-column:1/-1; padding:10px 0; }
+
+  /* Upload buttons + progress */
+  .upload-row{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .upload-btn{
+    font-family:var(--mono); font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+    padding:9px 14px; border-radius:6px; cursor:pointer; border:1px solid var(--border);
+    background:var(--surface); color:var(--text-dim); display:flex; align-items:center; gap:7px;
+    transition:border-color .2s ease, color .2s ease, background .2s ease;
+  }
+  .upload-btn:hover{ border-color:var(--red); color:var(--red-bright); }
+  .upload-btn input[type="file"]{ display:none; }
+  .upload-progress-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+  .upload-progress-item{ display:flex; flex-direction:column; gap:4px; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 10px; }
+  .upload-progress-top{ display:flex; justify-content:space-between; align-items:center; font-family:var(--mono); font-size:10px; color:var(--text-faint); gap:8px; }
+  .upload-progress-top span:first-child{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .upload-progress-track{ height:4px; border-radius:3px; background:var(--surface-2); overflow:hidden; }
+  .upload-progress-fill{ height:100%; background:var(--red); transition:width .15s ease; }
+  .upload-progress-item.is-error .upload-progress-fill{ background:var(--red-bright); }
+  .upload-progress-item.is-error .upload-progress-top{ color:var(--red-bright); }
 
   /* Project card cover + count badge (public site) */
   .project-card-media .pc-count{ position:absolute; bottom:6px; right:6px; background:rgba(0,0,0,.65); color:var(--text); font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:10px; letter-spacing:.03em; z-index:1; }
@@ -488,26 +511,20 @@
     <!-- ===== TAB: MEDIA ===== -->
     <div class="tab-pane" id="tab-media">
       <div class="admin-section-title">Media Library</div>
-      <div class="cms-notice" style="margin-bottom:12px">Upload images, videos, and project files. Media is stored locally in your browser (IndexedDB). Assign to any category project.</div>
+      <div class="cms-notice" style="margin-bottom:12px">Upload images, videos, and project files straight from your device. Files are stored in Firebase Storage and synced through your media library — assign to any category project.</div>
       <div class="media-filter" id="mediaFilter">
         <button class="media-filter-btn active" data-filter="all">All</button>
         <button class="media-filter-btn" data-filter="image">Images</button>
         <button class="media-filter-btn" data-filter="video">Video</button>
         <button class="media-filter-btn" data-filter="file">Files</button>
       </div>
-      <div class="cms-notice" style="margin-bottom:10px">No file uploads — paste a direct image or video URL (GitHub raw, Cloudinary, Imgur, etc.) and it will be saved to your Firestore media library and reused across projects.</div>
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
-        <label class="admin-field" style="flex:2;min-width:180px;margin-bottom:0"><span>URL</span><input type="url" id="mediaUrlInput" placeholder="https://raw.githubusercontent.com/…/image.jpg"></label>
-        <label class="admin-field" style="width:120px;margin-bottom:0"><span>Name / label</span><input type="text" id="mediaNameInput" placeholder="my-photo"></label>
-        <label class="admin-field" style="width:100px;margin-bottom:0"><span>Type</span>
-          <select id="mediaTypeSelect">
-            <option value="image">Image</option>
-            <option value="video">Video</option>
-            <option value="file">Other</option>
-          </select>
-        </label>
-        <button class="admin-btn admin-btn-primary admin-btn-sm" id="mediaAddUrlBtn" style="margin-bottom:0;align-self:flex-end">Add</button>
+      <div class="cms-notice" style="margin-bottom:10px">Upload directly from your device — files are saved to Firebase Storage automatically and become visible to every visitor in real time, no refresh needed.</div>
+      <div class="upload-row">
+        <label class="upload-btn">⬆ Upload Image<input type="file" id="mediaUploadImage" accept="image/*"></label>
+        <label class="upload-btn">⬆ Upload Video<input type="file" id="mediaUploadVideo" accept="video/*"></label>
+        <label class="upload-btn">⬆ Upload File<input type="file" id="mediaUploadFile" accept="*/*"></label>
       </div>
+      <div class="upload-progress-list" id="mediaUploadProgress"></div>
       <div class="media-grid" id="mediaGrid" style="margin-top:12px"></div>
     </div>
 
@@ -605,19 +622,13 @@
 
     <div style="margin-top:4px">
       <div class="admin-section-title" style="margin-bottom:8px">Project media (images / videos)</div>
-      <div class="cms-notice" style="margin-bottom:10px">Paste a direct image or video URL to attach it to this project. Or pick from the Media Library below. First item is used as the project cover. Drag thumbnails to reorder.</div>
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
-        <label class="admin-field" style="flex:2;min-width:160px;margin-bottom:0"><span>URL</span><input type="url" id="peUrlInput" placeholder="https://raw.githubusercontent.com/…/image.jpg"></label>
-        <label class="admin-field" style="width:110px;margin-bottom:0"><span>Name</span><input type="text" id="peNameInput" placeholder="cover.jpg"></label>
-        <label class="admin-field" style="width:96px;margin-bottom:0"><span>Type</span>
-          <select id="peTypeSelect">
-            <option value="image">Image</option>
-            <option value="video">Video</option>
-            <option value="file">Other</option>
-          </select>
-        </label>
-        <button class="admin-btn admin-btn-primary admin-btn-sm" id="peAddUrlBtn" style="margin-bottom:0;align-self:flex-end">Add</button>
+      <div class="cms-notice" style="margin-bottom:10px">Upload an image, video, or file straight from your device. It's saved automatically and attached to this project. First item is used as the project cover. Drag thumbnails to reorder.</div>
+      <div class="upload-row">
+        <label class="upload-btn">⬆ Upload Image<input type="file" id="peUploadImage" accept="image/*"></label>
+        <label class="upload-btn">⬆ Upload Video<input type="file" id="peUploadVideo" accept="video/*"></label>
+        <label class="upload-btn">⬆ Upload File<input type="file" id="peUploadFile" accept="*/*"></label>
       </div>
+      <div class="upload-progress-list" id="peUploadProgress"></div>
       <div class="pm-grid" id="peMediaGrid" style="margin-top:10px"></div>
     </div>
 
@@ -733,11 +744,12 @@ const firebaseConfig = {
   measurementId:     "G-B0R31FT8QN"
 };
 
-let fbDb = null, fbAuth = null;
+let fbDb = null, fbAuth = null, fbStorage = null;
 try {
   firebase.initializeApp(firebaseConfig);
-  fbDb   = firebase.firestore();
-  fbAuth = firebase.auth();
+  fbDb      = firebase.firestore();
+  fbAuth    = firebase.auth();
+  fbStorage = firebase.storage();
   // Session-scoped persistence: admin is signed out when the tab closes.
   fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(()=>{});
 } catch(e) {
@@ -747,7 +759,33 @@ try {
 const FIREBASE_READY = !!(fbDb && fbAuth);
 const STATE_DOC_PATH = ['portfolio','main'];          // Firestore doc holding all site content
 const MEDIA_COLLECTION = 'media';                      // Firestore collection holding media metadata
-// No Storage folder — files are referenced as plain external URLs only.
+const STORAGE_FOLDER = 'media';                        // Firebase Storage folder uploads are written to
+const MAX_UPLOAD_BYTES = { image: 15*1024*1024, video: 300*1024*1024, file: 50*1024*1024 };
+
+// --------- ONE-TIME STARTUP DIAGNOSTICS ---------
+// Confirms Firestore / Auth / Storage are all attached to the SAME Firebase
+// app (i.e. the same project), and prints the exact bucket/project the page
+// is talking to. Open the browser console to see this on every page load —
+// it's the fastest way to catch a mismatched bucket name or a missing SDK.
+(function runFirebaseDiagnostics(){
+  try{
+    const app = firebase.apps && firebase.apps[0];
+    console.log('[Firebase diag] SDK version:', firebase.SDK_VERSION);
+    console.log('[Firebase diag] App initialized:', !!app, app ? app.name : '(none)');
+    if(app){
+      console.log('[Firebase diag] projectId:', app.options.projectId);
+      console.log('[Firebase diag] storageBucket:', app.options.storageBucket);
+      console.log('[Firebase diag] authDomain:', app.options.authDomain);
+    }
+    console.log('[Firebase diag] fbDb attached to same app as default app:', !!fbDb && fbDb.app === app);
+    console.log('[Firebase diag] fbAuth attached to same app as default app:', !!fbAuth && fbAuth.app === app);
+    console.log('[Firebase diag] fbStorage attached to same app as default app:', !!fbStorage && fbStorage.app === app);
+    console.log('[Firebase diag] window protocol (file:// breaks ES-module dynamic import):', window.location.protocol);
+    if(!fbStorage){
+      console.error('[Firebase diag] fbStorage is NULL — firebase.storage() threw during init. Uploads cannot work until this is fixed. Check that firebase-storage-compat.js loaded (Network tab) and that storageBucket is set in firebaseConfig.');
+    }
+  }catch(e){ console.error('[Firebase diag] diagnostics crashed:', e); }
+})();
 
 // Tracks the signed-in Firebase user. Populated/cleared by onAuthStateChanged
 // below, which is the single source of truth for "is an admin logged in".
@@ -857,11 +895,11 @@ function attachRealtimeStateListener(){
 }
 
 // --------- MEDIA LIBRARY ---------
-// Media items are plain records: { id, name, type, url, createdAt }.
-// There is NO file upload and NO Firebase Storage.
-// The admin pastes external URLs (GitHub raw, Cloudinary, Imgur, any CDN).
-// Records are stored in the Firestore "media" collection (text only) and in
-// IndexedDB as a local fallback / offline cache.
+// Media items are plain records: { id, name, type, dataUrl, size, createdAt, storagePath }.
+// The admin uploads real files from their device; bytes go to Firebase
+// Storage and dataUrl holds the resulting public download URL.
+// Records are stored in the Firestore "media" collection (text only — no
+// binary data in Firestore) and in IndexedDB as a local fallback / offline cache.
 let mediaDB = null;
 function openMediaDB(){
   return new Promise((res,rej)=>{
@@ -881,16 +919,17 @@ function idbPut(obj){ return new Promise((res,rej)=>{ const tx=mediaDB.transacti
 function idbGetAll(){ return new Promise((res,rej)=>{ const req=mediaDB.transaction('files','readonly').objectStore('files').getAll(); req.onsuccess=e=>res(e.target.result); req.onerror=rej; }); }
 function idbDelete(id){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').delete(id).onsuccess=()=>res(); tx.onerror=rej; }); }
 
-// obj: { id, name, type, dataUrl } where dataUrl is an EXTERNAL URL string.
-// Saves metadata to Firestore (text only — no file bytes, no Storage).
+// obj: { id, name, type, dataUrl, storagePath } where dataUrl is the public
+// Firebase Storage download URL for an uploaded file (storagePath is the
+// Storage object path, kept so dbDelete() can also remove the file itself).
+// Saves metadata to Firestore (text only — the file bytes live in Storage).
 async function dbPut(obj){
-  // Normalise: we call the field "dataUrl" throughout the codebase for
-  // backwards-compat; it holds a plain https:// URL, not a base-64 string.
   const record = {
     id: obj.id,
     name: obj.name || 'untitled',
     type: obj.type || 'image',
-    dataUrl: obj.dataUrl,   // external URL
+    dataUrl: obj.dataUrl,             // Firebase Storage download URL
+    storagePath: obj.storagePath || null,
     size: obj.size || 0,
     createdAt: Date.now()
   };
@@ -913,9 +952,172 @@ async function dbGetAll(){
 async function dbDelete(id){
   if(!fbDb) return idbDelete(id);
   if(!isAuthed()) throw new Error('Not signed in as admin — delete rejected.');
-  // Only delete the Firestore metadata record — there is no Storage file.
+  try{
+    const doc = await fbDb.collection(MEDIA_COLLECTION).doc(id).get();
+    const data = doc.exists ? doc.data() : null;
+    if(data && data.storagePath && fbStorage){
+      await fbStorage.ref().child(data.storagePath).delete().catch(()=>{ /* file may already be gone */ });
+    }
+  }catch(e){ console.warn('Could not check/delete Storage file for', id, e); }
   await fbDb.collection(MEDIA_COLLECTION).doc(id).delete();
   if(mediaDB) idbDelete(id).catch(()=>{});
+}
+
+// --------- DIRECT FILE UPLOADS (Firebase Storage) ---------
+// IMPORTANT: this uses ONLY the compat SDK (firebase.storage()), the same
+// one already used for Auth/Firestore everywhere else in this file.
+//
+// An earlier version of this code dynamically import()'d the *modular*
+// Storage SDK from gstatic to call uploadBytesResumable() by name, while the
+// rest of the app loads Firebase via the compat <script> tags. That mixes
+// two separate module systems (ESM dynamic import vs. global script-tag
+// bundle), which Firebase's own docs call out as a known interoperability
+// hazard: "mixing CJS/ESM creates multiple instances of the SDK, each
+// distinct from the other." In practice that meant getStorage(app) was
+// handed a compat app object the modular module's internal registry didn't
+// fully recognize, so the returned storage service had no real bucket/app
+// link — and ref() crashed deep inside trying to read location data that
+// was never populated ("Cannot read properties of undefined (reading
+// 'path')"). That is the root cause of the crash.
+//
+// The fix is to stop mixing SDK flavors. Compat's ref().put() is NOT a
+// "simple upload" — it performs the exact same resumable-upload network
+// protocol as uploadBytesResumable() in the modular API; it's just exposed
+// under the older, namespaced method name. Every step below is guarded and
+// logged so the failing variable is always identified, never silently
+// dereferenced while undefined.
+function inferKindFromFile(file, fallback){
+  if(fallback) return fallback;
+  if(file && file.type && file.type.startsWith('image/')) return 'image';
+  if(file && file.type && file.type.startsWith('video/')) return 'video';
+  return 'file';
+}
+// Turns a raw Firebase error into a short, human-readable hint AND always
+// keeps the exact original code/message attached, so the UI and console
+// both show the real Firebase error — never a vague "something went wrong".
+function describeUploadError(err){
+  if(!err) return 'Unknown error.';
+  const code = err.code || '';
+  const hints = {
+    'storage/unauthorized': 'Permission denied by Firebase Storage rules — sign in as admin and confirm the Storage rules allow this account to write.',
+    'storage/unauthenticated': 'Not authenticated with Firebase — sign in as admin again and retry.',
+    'storage/canceled': 'Upload was canceled.',
+    'storage/quota-exceeded': 'Firebase Storage quota exceeded for this project.',
+    'storage/retry-limit-exceeded': 'Upload timed out after repeated retries — check your connection, the bucket name, and that Storage is enabled.',
+    'storage/unknown': 'Unknown Storage error — verify the Storage bucket exists, is enabled, and its rules are published.',
+    'storage/object-not-found': 'The uploaded object could not be found right after upload.',
+    'storage/invalid-argument': 'Firebase Storage rejected this upload (invalid argument).',
+    'storage/no-default-bucket': 'No Storage bucket is configured on this Firebase app — check firebaseConfig.storageBucket.'
+  };
+  const hint = hints[code] || (code ? 'Firebase Storage error.' : 'Upload failed.');
+  const raw = `[code: ${code || 'n/a'}] ${err.message || err}`;
+  return `${hint} — ${raw}`;
+}
+const UPLOAD_TIMEOUT_MS = 45000; // if nothing happens for 45s, fail loudly instead of hanging forever
+
+async function uploadFileToStorage(file, kind, onProgress){
+  // ---- Step 1: validate the storage SERVICE before touching anything else
+  console.log('[upload] step 1 — storage service:', fbStorage,
+    fbStorage ? { bucket: fbStorage.app && fbStorage.app.options && fbStorage.app.options.storageBucket } : '(none)');
+  if(!fbStorage){
+    throw new Error('Firebase Storage is not initialized (fbStorage is undefined) — check firebaseConfig.storageBucket and that firebase-storage-compat.js loaded before this code ran.');
+  }
+
+  // ---- Step 2: validate the FILE before building any reference/path
+  console.log('[upload] step 2 — file:', file,
+    file ? { name: file.name, size: file.size, type: file.type } : '(none)');
+  if(!file || typeof file.size !== 'number'){
+    throw new Error('No valid File object was provided to uploadFileToStorage (file is undefined or not a File/Blob).');
+  }
+
+  if(!isAuthed()){ throw new Error('Not signed in as admin — upload rejected.'); }
+
+  const type = inferKindFromFile(file, kind);
+  const limit = MAX_UPLOAD_BYTES[type] || MAX_UPLOAD_BYTES.file;
+  if(file.size > limit){ throw new Error(`File too large (max ${(limit/1024/1024).toFixed(0)}MB for ${type}).`); }
+
+  const id = uid();
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+  const path = `${STORAGE_FOLDER}/${id}-${safeName}`;
+  const metadata = { contentType: file.type || 'application/octet-stream' };
+
+  // ---- Step 3: build the StorageReference and validate it
+  let storageRef;
+  try{
+    storageRef = fbStorage.ref().child(path);
+  }catch(e){
+    console.error('[upload] step 3 — building storageRef threw:', e);
+    throw new Error('Failed to create a Storage reference: ' + describeUploadError(e));
+  }
+  console.log('[upload] step 3 — storageRef:', storageRef,
+    storageRef ? { fullPath: storageRef.fullPath, bucket: storageRef.bucket } : '(none)');
+  if(!storageRef || typeof storageRef.put !== 'function'){
+    throw new Error('Storage reference is invalid (storageRef is undefined or missing put()) — this points to a Storage SDK init problem, not a rules problem.');
+  }
+
+  // ---- Step 4: start the resumable upload and validate the returned task
+  let uploadTask;
+  try{
+    uploadTask = storageRef.put(file, metadata); // resumable upload — same protocol as uploadBytesResumable()
+  }catch(e){
+    console.error('[upload] step 4 — starting put() threw:', e);
+    throw new Error('Failed to start the upload task: ' + describeUploadError(e));
+  }
+  console.log('[upload] step 4 — uploadTask:', uploadTask, path);
+  if(!uploadTask || typeof uploadTask.on !== 'function'){
+    throw new Error('Upload task is invalid (uploadTask is undefined or missing on()) — Storage did not return a usable task.');
+  }
+
+  // ---- Step 5: track progress / error / completion, with a watchdog so the
+  // promise can never hang forever (e.g. silently dropped network request).
+  return new Promise((resolve, reject)=>{
+    let settled = false;
+    let lastActivity = Date.now();
+
+    const watchdog = setInterval(()=>{
+      if(settled){ clearInterval(watchdog); return; }
+      if(Date.now() - lastActivity > UPLOAD_TIMEOUT_MS){
+        settled = true;
+        clearInterval(watchdog);
+        try{ uploadTask.cancel(); }catch(_e){}
+        reject(new Error(`Upload timed out — no response from Firebase Storage after ${UPLOAD_TIMEOUT_MS/1000}s. Check the bucket name (${(fbStorage.app && fbStorage.app.options.storageBucket) || '?'}), that Storage is enabled, and that your network allows requests to firebasestorage.googleapis.com.`));
+      }
+    }, 1000);
+
+    uploadTask.on('state_changed',
+      snap => {
+        lastActivity = Date.now();
+        const frac = snap.totalBytes > 0 ? (snap.bytesTransferred / snap.totalBytes) : 0;
+        if(onProgress) onProgress(frac);
+      },
+      err => {
+        if(settled) return;
+        settled = true;
+        clearInterval(watchdog);
+        console.error('[upload] step 5 — Firebase Storage error:', err && err.code, err && err.message, err);
+        reject(new Error(describeUploadError(err)));
+      },
+      async ()=>{
+        if(settled) return;
+        try{
+          const snapshotRef = uploadTask.snapshot && uploadTask.snapshot.ref;
+          console.log('[upload] step 6 — completed, snapshot.ref:', snapshotRef);
+          if(!snapshotRef){ throw new Error('Upload finished but uploadTask.snapshot.ref is undefined.'); }
+          const url = await snapshotRef.getDownloadURL();
+          settled = true;
+          clearInterval(watchdog);
+          if(onProgress) onProgress(1);
+          console.log('[upload] step 6 — download URL:', url);
+          resolve({ id, name: file.name, type, dataUrl: url, size: file.size, storagePath: path });
+        }catch(e){
+          settled = true;
+          clearInterval(watchdog);
+          console.error('[upload] step 6 — getDownloadURL failed:', e);
+          reject(new Error(describeUploadError(e)));
+        }
+      }
+    );
+  });
 }
 
 
@@ -1549,23 +1751,22 @@ function renderProjectMediaGrid(){
   });
 }
 
-// ---- add-URL zone directly inside the project modal ----
-document.getElementById('peAddUrlBtn').addEventListener('click', async ()=>{
-  const url  = document.getElementById('peUrlInput').value.trim();
-  const name = document.getElementById('peNameInput').value.trim() || url.split('/').pop() || 'media';
-  const type = document.getElementById('peTypeSelect').value;
-  if(!url){ alert('Please enter a URL.'); return; }
-  const item = { id:uid(), name, type, dataUrl:url, size:0 };
-  try{
-    await dbPut(item); // also save to the shared media library so it's reusable elsewhere
-    currentProjectMedia.push(item);
-  }catch(e){ console.error(e); alert('Save failed — please sign in and retry.'); return; }
-  document.getElementById('peUrlInput').value  = '';
-  document.getElementById('peNameInput').value = '';
+// ---- upload-from-device zone directly inside the project modal ----
+wireUploadInput(document.getElementById('peUploadImage'), document.getElementById('peUploadProgress'), 'image', item=>{
+  currentProjectMedia.push(item);
   renderProjectMediaGrid();
   renderMediaPickerInProject();
 });
-document.getElementById('peUrlInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('peAddUrlBtn').click(); });
+wireUploadInput(document.getElementById('peUploadVideo'), document.getElementById('peUploadProgress'), 'video', item=>{
+  currentProjectMedia.push(item);
+  renderProjectMediaGrid();
+  renderMediaPickerInProject();
+});
+wireUploadInput(document.getElementById('peUploadFile'), document.getElementById('peUploadProgress'), 'file', item=>{
+  currentProjectMedia.push(item);
+  renderProjectMediaGrid();
+  renderMediaPickerInProject();
+});
 
 // ---- pick (add) existing items from the shared Media Library ----
 async function renderMediaPickerInProject(){
@@ -1598,7 +1799,7 @@ async function renderMediaPickerInProject(){
 }
 
 // =====================================================================
-// MEDIA LIBRARY — URL-BASED (no file uploads)
+// MEDIA LIBRARY — DIRECT DEVICE UPLOADS (Firebase Storage)
 // =====================================================================
 let mediaFilterType = 'all';
 
@@ -1611,20 +1812,56 @@ document.getElementById('mediaFilter').querySelectorAll('.media-filter-btn').for
   });
 });
 
-document.getElementById('mediaAddUrlBtn').addEventListener('click', async ()=>{
-  const url  = document.getElementById('mediaUrlInput').value.trim();
-  const name = document.getElementById('mediaNameInput').value.trim() || url.split('/').pop() || 'media-item';
-  const type = document.getElementById('mediaTypeSelect').value;
-  if(!url){ alert('Please enter a URL.'); return; }
-  try{
-    await dbPut({ id:uid(), name, type, dataUrl:url, size:0 });
-    document.getElementById('mediaUrlInput').value = '';
-    document.getElementById('mediaNameInput').value = '';
-    renderMediaGrid();
-  }catch(e){ console.error(e); alert('Save failed — please sign in and retry.'); }
-});
-// Also allow Enter key in URL field
-document.getElementById('mediaUrlInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('mediaAddUrlBtn').click(); });
+// --------- SHARED UPLOAD-PROGRESS UI HELPER ---------
+// wireUploadInput renders a small progress row while the upload runs, then
+// removes it once the file is saved (or shows an error state on failure).
+function wireUploadInput(inputEl, listEl, kind, onDone){
+  inputEl.addEventListener('change', async ()=>{
+    const file = inputEl.files && inputEl.files[0];
+    inputEl.value = ''; // allow re-selecting the same file later
+    if(!file) return;
+    const row = document.createElement('div');
+    row.className = 'upload-progress-item';
+    row.innerHTML = `<div class="upload-progress-top"><span>${esc(file.name)}</span><span class="up-pct">0%</span></div><div class="upload-progress-track"><div class="upload-progress-fill" style="width:0%"></div></div>`;
+    listEl.appendChild(row);
+    const pctEl = row.querySelector('.up-pct');
+    const fillEl = row.querySelector('.upload-progress-fill');
+    const fail = (msg)=>{
+      row.classList.add('is-error');
+      pctEl.textContent = 'Failed';
+      pctEl.title = msg;
+      fillEl.style.width = '100%';
+      console.error('[upload]', msg);
+      alert('Upload failed: ' + msg);
+      setTimeout(()=>row.remove(), 6000);
+    };
+    let item;
+    try{
+      item = await uploadFileToStorage(file, kind, frac=>{
+        const pct = Math.max(0, Math.min(100, Math.round(frac*100)));
+        pctEl.textContent = pct+'%';
+        fillEl.style.width = pct+'%';
+      });
+    }catch(e){
+      fail(e && e.message ? e.message : String(e));
+      return;
+    }
+    // File is in Storage and we have the download URL — now persist the
+    // metadata record (incl. that URL) to Firestore so it's saved for good.
+    try{
+      pctEl.textContent = 'Saving…';
+      await dbPut(item);
+    }catch(e){
+      fail('File uploaded to Storage, but saving its record to Firestore failed: ' + (e && e.message ? e.message : String(e)));
+      return;
+    }
+    row.remove();
+    onDone(item); // attach to the project / refresh the library grid
+  });
+}
+wireUploadInput(document.getElementById('mediaUploadImage'), document.getElementById('mediaUploadProgress'), 'image', ()=>renderMediaGrid());
+wireUploadInput(document.getElementById('mediaUploadVideo'), document.getElementById('mediaUploadProgress'), 'video', ()=>renderMediaGrid());
+wireUploadInput(document.getElementById('mediaUploadFile'),  document.getElementById('mediaUploadProgress'), 'file',  ()=>renderMediaGrid());
 
 async function renderMediaGrid(){
   const grid = document.getElementById('mediaGrid');
