@@ -10,13 +10,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
-<!-- Firebase Storage IS used now. The admin uploads image/video/file media
-     directly from their device via the buttons in the CMS panel; the file
-     bytes go to Firebase Storage and the resulting download URL is stored as
-     plain text in Firestore alongside the rest of the site data, so every
-     visitor's page stays in sync in real time via the existing Firestore
-     listener. -->
+<!-- Uploads go to Cloudinary (unsigned preset). Auth + Firestore stay on Firebase. -->
 <style>
   :root{
     --bg:#0a0607;
@@ -738,18 +732,16 @@ const firebaseConfig = {
   apiKey:            "AIzaSyA5wlgF3WpjcwnY78ij5zhMXR0YvSbW97I",
   authDomain:        "portfolio-c125b.firebaseapp.com",
   projectId:         "portfolio-c125b",
-  storageBucket:     "portfolio-c125b.firebasestorage.app",
   messagingSenderId: "652844386533",
   appId:             "1:652844386533:web:3e8a1d1063e25e8a8bec0c",
   measurementId:     "G-B0R31FT8QN"
 };
 
-let fbDb = null, fbAuth = null, fbStorage = null;
+let fbDb = null, fbAuth = null;
 try {
   firebase.initializeApp(firebaseConfig);
   fbDb      = firebase.firestore();
   fbAuth    = firebase.auth();
-  fbStorage = firebase.storage();
   // Session-scoped persistence: admin is signed out when the tab closes.
   fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(()=>{});
 } catch(e) {
@@ -759,14 +751,23 @@ try {
 const FIREBASE_READY = !!(fbDb && fbAuth);
 const STATE_DOC_PATH = ['portfolio','main'];          // Firestore doc holding all site content
 const MEDIA_COLLECTION = 'media';                      // Firestore collection holding media metadata
-const STORAGE_FOLDER = 'media';                        // Firebase Storage folder uploads are written to
 const MAX_UPLOAD_BYTES = { image: 15*1024*1024, video: 300*1024*1024, file: 50*1024*1024 };
 
+// --------- CLOUDINARY CONFIG ---------
+// Files are uploaded directly from the browser to Cloudinary using an
+// unsigned upload preset (no server needed, works on GitHub Pages).
+// Steps to set this up:
+//   1. Create a free account at https://cloudinary.com
+//   2. Dashboard → Settings → Upload → Upload presets → Add upload preset
+//      • Signing mode: Unsigned
+//      • Folder: portfolio  (optional but keeps things tidy)
+//      • Save → copy the preset name
+//   3. Copy your Cloud Name from the dashboard top-left
+//   4. Replace the two values below with your own.
+const CLOUDINARY_CLOUD_NAME  = 'YOUR_CLOUD_NAME';   // e.g. 'dxyz123abc'
+const CLOUDINARY_UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET'; // e.g. 'portfolio_unsigned'
+
 // --------- ONE-TIME STARTUP DIAGNOSTICS ---------
-// Confirms Firestore / Auth / Storage are all attached to the SAME Firebase
-// app (i.e. the same project), and prints the exact bucket/project the page
-// is talking to. Open the browser console to see this on every page load —
-// it's the fastest way to catch a mismatched bucket name or a missing SDK.
 (function runFirebaseDiagnostics(){
   try{
     const app = firebase.apps && firebase.apps[0];
@@ -774,16 +775,12 @@ const MAX_UPLOAD_BYTES = { image: 15*1024*1024, video: 300*1024*1024, file: 50*1
     console.log('[Firebase diag] App initialized:', !!app, app ? app.name : '(none)');
     if(app){
       console.log('[Firebase diag] projectId:', app.options.projectId);
-      console.log('[Firebase diag] storageBucket:', app.options.storageBucket);
       console.log('[Firebase diag] authDomain:', app.options.authDomain);
     }
     console.log('[Firebase diag] fbDb attached to same app as default app:', !!fbDb && fbDb.app === app);
     console.log('[Firebase diag] fbAuth attached to same app as default app:', !!fbAuth && fbAuth.app === app);
-    console.log('[Firebase diag] fbStorage attached to same app as default app:', !!fbStorage && fbStorage.app === app);
-    console.log('[Firebase diag] window protocol (file:// breaks ES-module dynamic import):', window.location.protocol);
-    if(!fbStorage){
-      console.error('[Firebase diag] fbStorage is NULL — firebase.storage() threw during init. Uploads cannot work until this is fixed. Check that firebase-storage-compat.js loaded (Network tab) and that storageBucket is set in firebaseConfig.');
-    }
+    console.log('[Firebase diag] Cloudinary cloud name:', CLOUDINARY_CLOUD_NAME);
+    console.log('[Firebase diag] Cloudinary upload preset:', CLOUDINARY_UPLOAD_PRESET);
   }catch(e){ console.error('[Firebase diag] diagnostics crashed:', e); }
 })();
 
@@ -895,11 +892,10 @@ function attachRealtimeStateListener(){
 }
 
 // --------- MEDIA LIBRARY ---------
-// Media items are plain records: { id, name, type, dataUrl, size, createdAt, storagePath }.
-// The admin uploads real files from their device; bytes go to Firebase
-// Storage and dataUrl holds the resulting public download URL.
-// Records are stored in the Firestore "media" collection (text only — no
-// binary data in Firestore) and in IndexedDB as a local fallback / offline cache.
+// Media items are plain records: { id, name, type, dataUrl, size, createdAt, cloudinaryPublicId }.
+// The admin uploads files from their device; bytes go directly to Cloudinary
+// (unsigned preset, no server needed). The returned URL is stored in Firestore
+// so every visitor sees the latest media in real time via the existing listener.
 let mediaDB = null;
 function openMediaDB(){
   return new Promise((res,rej)=>{
@@ -919,17 +915,16 @@ function idbPut(obj){ return new Promise((res,rej)=>{ const tx=mediaDB.transacti
 function idbGetAll(){ return new Promise((res,rej)=>{ const req=mediaDB.transaction('files','readonly').objectStore('files').getAll(); req.onsuccess=e=>res(e.target.result); req.onerror=rej; }); }
 function idbDelete(id){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').delete(id).onsuccess=()=>res(); tx.onerror=rej; }); }
 
-// obj: { id, name, type, dataUrl, storagePath } where dataUrl is the public
-// Firebase Storage download URL for an uploaded file (storagePath is the
-// Storage object path, kept so dbDelete() can also remove the file itself).
-// Saves metadata to Firestore (text only — the file bytes live in Storage).
+// Saves a Cloudinary-uploaded file's metadata to Firestore + IndexedDB.
+// dataUrl is the Cloudinary delivery URL; cloudinaryPublicId is kept so the
+// file can be deleted from Cloudinary later if needed (via the Cloudinary dashboard).
 async function dbPut(obj){
   const record = {
     id: obj.id,
     name: obj.name || 'untitled',
     type: obj.type || 'image',
-    dataUrl: obj.dataUrl,             // Firebase Storage download URL
-    storagePath: obj.storagePath || null,
+    dataUrl: obj.dataUrl,                           // Cloudinary delivery URL
+    cloudinaryPublicId: obj.cloudinaryPublicId || null,
     size: obj.size || 0,
     createdAt: Date.now()
   };
@@ -952,171 +947,86 @@ async function dbGetAll(){
 async function dbDelete(id){
   if(!fbDb) return idbDelete(id);
   if(!isAuthed()) throw new Error('Not signed in as admin — delete rejected.');
-  try{
-    const doc = await fbDb.collection(MEDIA_COLLECTION).doc(id).get();
-    const data = doc.exists ? doc.data() : null;
-    if(data && data.storagePath && fbStorage){
-      await fbStorage.ref().child(data.storagePath).delete().catch(()=>{ /* file may already be gone */ });
-    }
-  }catch(e){ console.warn('Could not check/delete Storage file for', id, e); }
+  // Note: Cloudinary file deletion requires a server-side signed API call and
+  // cannot be done from the browser without exposing the API secret. The file
+  // is removed from the Firestore record and will no longer appear in the site,
+  // but the raw asset stays in your Cloudinary account until you delete it there.
   await fbDb.collection(MEDIA_COLLECTION).doc(id).delete();
   if(mediaDB) idbDelete(id).catch(()=>{});
 }
 
-// --------- DIRECT FILE UPLOADS (Firebase Storage) ---------
-// IMPORTANT: this uses ONLY the compat SDK (firebase.storage()), the same
-// one already used for Auth/Firestore everywhere else in this file.
+// --------- FILE UPLOADS — CLOUDINARY ---------
+// Files are posted directly from the browser to Cloudinary's unsigned upload
+// endpoint using a plain FormData/XHR request. No Firebase Storage, no server,
+// no CORS issues, works on GitHub Pages on the free Cloudinary plan.
 //
-// An earlier version of this code dynamically import()'d the *modular*
-// Storage SDK from gstatic to call uploadBytesResumable() by name, while the
-// rest of the app loads Firebase via the compat <script> tags. That mixes
-// two separate module systems (ESM dynamic import vs. global script-tag
-// bundle), which Firebase's own docs call out as a known interoperability
-// hazard: "mixing CJS/ESM creates multiple instances of the SDK, each
-// distinct from the other." In practice that meant getStorage(app) was
-// handed a compat app object the modular module's internal registry didn't
-// fully recognize, so the returned storage service had no real bucket/app
-// link — and ref() crashed deep inside trying to read location data that
-// was never populated ("Cannot read properties of undefined (reading
-// 'path')"). That is the root cause of the crash.
-//
-// The fix is to stop mixing SDK flavors. Compat's ref().put() is NOT a
-// "simple upload" — it performs the exact same resumable-upload network
-// protocol as uploadBytesResumable() in the modular API; it's just exposed
-// under the older, namespaced method name. Every step below is guarded and
-// logged so the failing variable is always identified, never silently
-// dereferenced while undefined.
+// The XHR progress event gives real byte-level progress, so the existing
+// progress bar UI continues to work exactly as before.
+
 function inferKindFromFile(file, fallback){
   if(fallback) return fallback;
   if(file && file.type && file.type.startsWith('image/')) return 'image';
   if(file && file.type && file.type.startsWith('video/')) return 'video';
   return 'file';
 }
-// Turns a raw Firebase error into a short, human-readable hint AND always
-// keeps the exact original code/message attached, so the UI and console
-// both show the real Firebase error — never a vague "something went wrong".
-function describeUploadError(err){
-  if(!err) return 'Unknown error.';
-  const code = err.code || '';
-  const hints = {
-    'storage/unauthorized': 'Permission denied by Firebase Storage rules — sign in as admin and confirm the Storage rules allow this account to write.',
-    'storage/unauthenticated': 'Not authenticated with Firebase — sign in as admin again and retry.',
-    'storage/canceled': 'Upload was canceled.',
-    'storage/quota-exceeded': 'Firebase Storage quota exceeded for this project.',
-    'storage/retry-limit-exceeded': 'Upload timed out after repeated retries — check your connection, the bucket name, and that Storage is enabled.',
-    'storage/unknown': 'Unknown Storage error — verify the Storage bucket exists, is enabled, and its rules are published.',
-    'storage/object-not-found': 'The uploaded object could not be found right after upload.',
-    'storage/invalid-argument': 'Firebase Storage rejected this upload (invalid argument).',
-    'storage/no-default-bucket': 'No Storage bucket is configured on this Firebase app — check firebaseConfig.storageBucket.'
-  };
-  const hint = hints[code] || (code ? 'Firebase Storage error.' : 'Upload failed.');
-  const raw = `[code: ${code || 'n/a'}] ${err.message || err}`;
-  return `${hint} — ${raw}`;
-}
-const UPLOAD_TIMEOUT_MS = 45000; // if nothing happens for 45s, fail loudly instead of hanging forever
 
 async function uploadFileToStorage(file, kind, onProgress){
-  // ---- Step 1: validate the storage SERVICE before touching anything else
-  console.log('[upload] step 1 — storage service:', fbStorage,
-    fbStorage ? { bucket: fbStorage.app && fbStorage.app.options && fbStorage.app.options.storageBucket } : '(none)');
-  if(!fbStorage){
-    throw new Error('Firebase Storage is not initialized (fbStorage is undefined) — check firebaseConfig.storageBucket and that firebase-storage-compat.js loaded before this code ran.');
-  }
-
-  // ---- Step 2: validate the FILE before building any reference/path
-  console.log('[upload] step 2 — file:', file,
-    file ? { name: file.name, size: file.size, type: file.type } : '(none)');
   if(!file || typeof file.size !== 'number'){
-    throw new Error('No valid File object was provided to uploadFileToStorage (file is undefined or not a File/Blob).');
+    throw new Error('No valid File object provided.');
   }
-
   if(!isAuthed()){ throw new Error('Not signed in as admin — upload rejected.'); }
+  if(!CLOUDINARY_CLOUD_NAME || CLOUDINARY_CLOUD_NAME === 'YOUR_CLOUD_NAME'){
+    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET in the script.');
+  }
 
   const type = inferKindFromFile(file, kind);
   const limit = MAX_UPLOAD_BYTES[type] || MAX_UPLOAD_BYTES.file;
-  if(file.size > limit){ throw new Error(`File too large (max ${(limit/1024/1024).toFixed(0)}MB for ${type}).`); }
+  if(file.size > limit){ throw new Error(`File too large (max ${(limit/1024/1024).toFixed(0)} MB for ${type}).`); }
 
   const id = uid();
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-  const path = `${STORAGE_FOLDER}/${id}-${safeName}`;
-  const metadata = { contentType: file.type || 'application/octet-stream' };
 
-  // ---- Step 3: build the StorageReference and validate it
-  let storageRef;
-  try{
-    storageRef = fbStorage.ref().child(path);
-  }catch(e){
-    console.error('[upload] step 3 — building storageRef threw:', e);
-    throw new Error('Failed to create a Storage reference: ' + describeUploadError(e));
-  }
-  console.log('[upload] step 3 — storageRef:', storageRef,
-    storageRef ? { fullPath: storageRef.fullPath, bucket: storageRef.bucket } : '(none)');
-  if(!storageRef || typeof storageRef.put !== 'function'){
-    throw new Error('Storage reference is invalid (storageRef is undefined or missing put()) — this points to a Storage SDK init problem, not a rules problem.');
-  }
+  // Cloudinary's unsigned upload endpoint accepts multipart/form-data.
+  // resource_type 'auto' lets Cloudinary detect image / video / raw itself.
+  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`;
+  const form = new FormData();
+  form.append('file', file);
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  form.append('public_id', `portfolio/${id}`);  // keeps files in a folder
 
-  // ---- Step 4: start the resumable upload and validate the returned task
-  let uploadTask;
-  try{
-    uploadTask = storageRef.put(file, metadata); // resumable upload — same protocol as uploadBytesResumable()
-  }catch(e){
-    console.error('[upload] step 4 — starting put() threw:', e);
-    throw new Error('Failed to start the upload task: ' + describeUploadError(e));
-  }
-  console.log('[upload] step 4 — uploadTask:', uploadTask, path);
-  if(!uploadTask || typeof uploadTask.on !== 'function'){
-    throw new Error('Upload task is invalid (uploadTask is undefined or missing on()) — Storage did not return a usable task.');
-  }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url, true);
 
-  // ---- Step 5: track progress / error / completion, with a watchdog so the
-  // promise can never hang forever (e.g. silently dropped network request).
-  return new Promise((resolve, reject)=>{
-    let settled = false;
-    let lastActivity = Date.now();
+    xhr.upload.addEventListener('progress', e => {
+      if(e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    });
 
-    const watchdog = setInterval(()=>{
-      if(settled){ clearInterval(watchdog); return; }
-      if(Date.now() - lastActivity > UPLOAD_TIMEOUT_MS){
-        settled = true;
-        clearInterval(watchdog);
-        try{ uploadTask.cancel(); }catch(_e){}
-        reject(new Error(`Upload timed out — no response from Firebase Storage after ${UPLOAD_TIMEOUT_MS/1000}s. Check the bucket name (${(fbStorage.app && fbStorage.app.options.storageBucket) || '?'}), that Storage is enabled, and that your network allows requests to firebasestorage.googleapis.com.`));
+    xhr.addEventListener('load', () => {
+      if(xhr.status >= 200 && xhr.status < 300){
+        let data;
+        try{ data = JSON.parse(xhr.responseText); }
+        catch(e){ reject(new Error('Cloudinary returned non-JSON response.')); return; }
+        if(data.error){ reject(new Error('Cloudinary error: ' + data.error.message)); return; }
+        if(onProgress) onProgress(1);
+        resolve({
+          id,
+          name: file.name,
+          type,
+          dataUrl: data.secure_url,            // HTTPS Cloudinary delivery URL
+          cloudinaryPublicId: data.public_id,  // kept for reference / manual deletion
+          size: file.size
+        });
+      } else {
+        let msg = `Cloudinary upload failed (HTTP ${xhr.status}).`;
+        try{ const d = JSON.parse(xhr.responseText); if(d.error) msg += ' ' + d.error.message; }catch(_){}
+        reject(new Error(msg));
       }
-    }, 1000);
+    });
 
-    uploadTask.on('state_changed',
-      snap => {
-        lastActivity = Date.now();
-        const frac = snap.totalBytes > 0 ? (snap.bytesTransferred / snap.totalBytes) : 0;
-        if(onProgress) onProgress(frac);
-      },
-      err => {
-        if(settled) return;
-        settled = true;
-        clearInterval(watchdog);
-        console.error('[upload] step 5 — Firebase Storage error:', err && err.code, err && err.message, err);
-        reject(new Error(describeUploadError(err)));
-      },
-      async ()=>{
-        if(settled) return;
-        try{
-          const snapshotRef = uploadTask.snapshot && uploadTask.snapshot.ref;
-          console.log('[upload] step 6 — completed, snapshot.ref:', snapshotRef);
-          if(!snapshotRef){ throw new Error('Upload finished but uploadTask.snapshot.ref is undefined.'); }
-          const url = await snapshotRef.getDownloadURL();
-          settled = true;
-          clearInterval(watchdog);
-          if(onProgress) onProgress(1);
-          console.log('[upload] step 6 — download URL:', url);
-          resolve({ id, name: file.name, type, dataUrl: url, size: file.size, storagePath: path });
-        }catch(e){
-          settled = true;
-          clearInterval(watchdog);
-          console.error('[upload] step 6 — getDownloadURL failed:', e);
-          reject(new Error(describeUploadError(e)));
-        }
-      }
-    );
+    xhr.addEventListener('error', () => reject(new Error('Network error during Cloudinary upload — check your internet connection.')));
+    xhr.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
+
+    xhr.send(form);
   });
 }
 
