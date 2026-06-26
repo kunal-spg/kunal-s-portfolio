@@ -6,6 +6,13 @@
 <title>Kunal — Editor Portfolio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Firebase (compat build — usable with a plain script tag, no bundler needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- Firebase Storage is NOT used. Media URLs are supplied by the admin as
+     external links (GitHub raw, Cloudinary, Imgur, etc.) and stored as plain
+     text in Firestore alongside the rest of the site data. -->
 <style>
   :root{
     --bg:#0a0607;
@@ -402,7 +409,7 @@
     </label>
     <div class="login-error" id="loginError">Invalid email or password.</div>
     <button type="submit" class="admin-btn admin-btn-primary" id="loginSubmit">Sign in</button>
-    <div class="login-note">Client-side gate only — deters casual visitors, not determined ones.</div>
+    <div class="login-note">Secured by Firebase Authentication — only the designated admin account can sign in and write changes.</div>
   </form>
 </div>
 
@@ -488,11 +495,18 @@
         <button class="media-filter-btn" data-filter="video">Video</button>
         <button class="media-filter-btn" data-filter="file">Files</button>
       </div>
-      <div class="media-upload-zone" id="mediaUploadZone">
-        <input type="file" id="mediaFileInput" multiple accept="image/*,video/*,.pdf,.zip,.psd,.ai,.fig">
-        <div style="font-size:22px;margin-bottom:8px">⬆</div>
-        <div>Drag files here or <strong style="color:var(--text-dim)">click to upload</strong></div>
-        <div style="margin-top:4px;font-size:10px">Images, Videos, PDF, ZIP, PSD, AI, Figma</div>
+      <div class="cms-notice" style="margin-bottom:10px">No file uploads — paste a direct image or video URL (GitHub raw, Cloudinary, Imgur, etc.) and it will be saved to your Firestore media library and reused across projects.</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+        <label class="admin-field" style="flex:2;min-width:180px;margin-bottom:0"><span>URL</span><input type="url" id="mediaUrlInput" placeholder="https://raw.githubusercontent.com/…/image.jpg"></label>
+        <label class="admin-field" style="width:120px;margin-bottom:0"><span>Name / label</span><input type="text" id="mediaNameInput" placeholder="my-photo"></label>
+        <label class="admin-field" style="width:100px;margin-bottom:0"><span>Type</span>
+          <select id="mediaTypeSelect">
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+            <option value="file">Other</option>
+          </select>
+        </label>
+        <button class="admin-btn admin-btn-primary admin-btn-sm" id="mediaAddUrlBtn" style="margin-bottom:0;align-self:flex-end">Add</button>
       </div>
       <div class="media-grid" id="mediaGrid" style="margin-top:12px"></div>
     </div>
@@ -590,12 +604,19 @@
     <label class="admin-toggle-row"><span>Show on site</span><input type="checkbox" id="peVisible" checked></label>
 
     <div style="margin-top:4px">
-      <div class="admin-section-title" style="margin-bottom:8px">Project media (images / videos / files)</div>
-      <div class="cms-notice" style="margin-bottom:10px">Upload directly below, or add from your Media Library. First item shown is used as the project cover. Drag thumbnails to reorder.</div>
-      <div class="media-upload-zone" id="peUploadZone">
-        <input type="file" id="peFileInput" multiple accept="image/*,video/*,.pdf,.zip,.psd,.ai,.fig">
-        <div style="font-size:20px;margin-bottom:6px">⬆</div>
-        <div>Drag files here or <strong style="color:var(--text-dim)">click to upload</strong></div>
+      <div class="admin-section-title" style="margin-bottom:8px">Project media (images / videos)</div>
+      <div class="cms-notice" style="margin-bottom:10px">Paste a direct image or video URL to attach it to this project. Or pick from the Media Library below. First item is used as the project cover. Drag thumbnails to reorder.</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
+        <label class="admin-field" style="flex:2;min-width:160px;margin-bottom:0"><span>URL</span><input type="url" id="peUrlInput" placeholder="https://raw.githubusercontent.com/…/image.jpg"></label>
+        <label class="admin-field" style="width:110px;margin-bottom:0"><span>Name</span><input type="text" id="peNameInput" placeholder="cover.jpg"></label>
+        <label class="admin-field" style="width:96px;margin-bottom:0"><span>Type</span>
+          <select id="peTypeSelect">
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+            <option value="file">Other</option>
+          </select>
+        </label>
+        <button class="admin-btn admin-btn-primary admin-btn-sm" id="peAddUrlBtn" style="margin-bottom:0;align-self:flex-end">Add</button>
       </div>
       <div class="pm-grid" id="peMediaGrid" style="margin-top:10px"></div>
     </div>
@@ -689,11 +710,62 @@
 // =====================================================================
 
 const STORAGE_KEY = 'kunal_portfolio_v2';
-const AUTH_KEY    = 'kunal_admin_authed';
 const MEDIA_DB    = 'kunal_media_v1';
-const ADMIN_EMAIL    = 'portfolioxkunal@gmail.com';
-const ADMIN_PASSWORD = 'NOT_KUNAL_VG';
+// The ONLY email allowed to administer this site. Create this exact account in
+// Firebase Console > Authentication > Users > Add user (Email/Password
+// provider). There is no sign-up flow in this app — accounts are provisioned
+// manually, and this constant is also checked client-side as a belt-and-
+// suspenders guard (real enforcement lives in the Firestore/Storage rules —
+// see the chat reply for the rules snippet).
+const ADMIN_EMAIL  = 'portfolioxkunal@gmail.com';
 const MAX_ATTEMPTS = 5;
+
+// =====================================================================
+// FIREBASE SETUP
+// =====================================================================
+const firebaseConfig = {
+  apiKey:            "AIzaSyA5wlgF3WpjcwnY78ij5zhMXR0YvSbW97I",
+  authDomain:        "portfolio-c125b.firebaseapp.com",
+  projectId:         "portfolio-c125b",
+  storageBucket:     "portfolio-c125b.firebasestorage.app",
+  messagingSenderId: "652844386533",
+  appId:             "1:652844386533:web:3e8a1d1063e25e8a8bec0c",
+  measurementId:     "G-B0R31FT8QN"
+};
+
+let fbDb = null, fbAuth = null;
+try {
+  firebase.initializeApp(firebaseConfig);
+  fbDb   = firebase.firestore();
+  fbAuth = firebase.auth();
+  // Session-scoped persistence: admin is signed out when the tab closes.
+  fbAuth.setPersistence(firebase.auth.Auth.Persistence.SESSION).catch(()=>{});
+} catch(e) {
+  console.error('Firebase init failed — falling back to local-only mode.', e);
+}
+// FIREBASE_READY kept for any guard checks elsewhere in this file.
+const FIREBASE_READY = !!(fbDb && fbAuth);
+const STATE_DOC_PATH = ['portfolio','main'];          // Firestore doc holding all site content
+const MEDIA_COLLECTION = 'media';                      // Firestore collection holding media metadata
+// No Storage folder — files are referenced as plain external URLs only.
+
+// Tracks the signed-in Firebase user. Populated/cleared by onAuthStateChanged
+// below, which is the single source of truth for "is an admin logged in".
+let currentAdminUser = null;
+function isAuthed(){ return !!currentAdminUser; }
+if(fbAuth){
+  fbAuth.onAuthStateChanged(user=>{
+    if(user && (user.email||'').toLowerCase() !== ADMIN_EMAIL.toLowerCase()){
+      // Signed in, but not the designated admin account — kick them out.
+      fbAuth.signOut();
+      currentAdminUser = null;
+      return;
+    }
+    currentAdminUser = user || null;
+    if(!currentAdminUser && typeof closePanel==='function') closePanel();
+  });
+}
+
 const LOCKOUT_MS   = 30000;
 
 // --------- DEFAULT STATE ---------
@@ -730,15 +802,66 @@ const DEFAULTS = {
 };
 
 // --------- STORAGE HELPERS ---------
+// localStorage is kept as a fast local cache / offline fallback. The source of
+// truth, when Firebase is configured, is the Firestore document below — every
+// save writes there, and a realtime listener pushes any change (from this tab,
+// another admin tab, or another device) straight into the live page for every
+// visitor, instantly.
 function loadState(){
   try{ return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}); }
   catch(e){ return Object.assign({}, DEFAULTS); }
 }
-function saveState(s){ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+function cacheStateLocally(s){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }catch(e){ /* ignore quota errors */ }
+}
+function saveState(s){
+  cacheStateLocally(s);
+  if(!fbDb) return; // local-only mode
+  if(!isAuthed()){ console.warn('Not signed in as admin — skipping Firebase write (would be rejected by security rules anyway).'); return; }
+  let clean;
+  try{ clean = JSON.parse(JSON.stringify(s)); } // strip undefined / functions for Firestore
+  catch(e){ console.error('Could not serialize state for Firebase', e); return; }
+  fbDb.collection(STATE_DOC_PATH[0]).doc(STATE_DOC_PATH[1]).set(clean)
+    .catch(err=>console.error('Firebase save failed — change is cached locally but not synced.', err));
+}
 
 let STATE = loadState();
 
-// --------- MEDIA DB (IndexedDB) ---------
+async function loadStateFromFirebase(){
+  if(!fbDb) return; // stay on whatever loadState() already produced from localStorage
+  try{
+    const ref  = fbDb.collection(STATE_DOC_PATH[0]).doc(STATE_DOC_PATH[1]);
+    const snap = await ref.get();
+    if(snap.exists){
+      STATE = Object.assign({}, DEFAULTS, snap.data());
+    } else {
+      STATE = Object.assign({}, DEFAULTS);
+      await ref.set(JSON.parse(JSON.stringify(STATE))); // seed the doc on first run
+    }
+    cacheStateLocally(STATE);
+  }catch(e){
+    console.error('Could not load state from Firebase — using local cache instead.', e);
+  }
+}
+function attachRealtimeStateListener(){
+  if(!fbDb) return;
+  fbDb.collection(STATE_DOC_PATH[0]).doc(STATE_DOC_PATH[1]).onSnapshot(snap=>{
+    if(!snap.exists) return;
+    STATE = Object.assign({}, DEFAULTS, snap.data());
+    cacheStateLocally(STATE);
+    applyState(STATE);
+    if(typeof panel!=='undefined' && panel.classList.contains('open')){
+      renderCatList(); renderContactList(); renderSectionOrder();
+    }
+  }, err=>console.error('Realtime sync error', err));
+}
+
+// --------- MEDIA LIBRARY ---------
+// Media items are plain records: { id, name, type, url, createdAt }.
+// There is NO file upload and NO Firebase Storage.
+// The admin pastes external URLs (GitHub raw, Cloudinary, Imgur, any CDN).
+// Records are stored in the Firestore "media" collection (text only) and in
+// IndexedDB as a local fallback / offline cache.
 let mediaDB = null;
 function openMediaDB(){
   return new Promise((res,rej)=>{
@@ -754,9 +877,47 @@ function openMediaDB(){
     req.onerror   = e => rej(e);
   });
 }
-function dbPut(obj){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').put(obj).onsuccess=e=>res(e.target.result); tx.onerror=rej; }); }
-function dbGetAll(){ return new Promise((res,rej)=>{ const req=mediaDB.transaction('files','readonly').objectStore('files').getAll(); req.onsuccess=e=>res(e.target.result); req.onerror=rej; }); }
-function dbDelete(id){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').delete(id).onsuccess=()=>res(); tx.onerror=rej; }); }
+function idbPut(obj){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').put(obj).onsuccess=e=>res(e.target.result); tx.onerror=rej; }); }
+function idbGetAll(){ return new Promise((res,rej)=>{ const req=mediaDB.transaction('files','readonly').objectStore('files').getAll(); req.onsuccess=e=>res(e.target.result); req.onerror=rej; }); }
+function idbDelete(id){ return new Promise((res,rej)=>{ const tx=mediaDB.transaction('files','readwrite'); tx.objectStore('files').delete(id).onsuccess=()=>res(); tx.onerror=rej; }); }
+
+// obj: { id, name, type, dataUrl } where dataUrl is an EXTERNAL URL string.
+// Saves metadata to Firestore (text only — no file bytes, no Storage).
+async function dbPut(obj){
+  // Normalise: we call the field "dataUrl" throughout the codebase for
+  // backwards-compat; it holds a plain https:// URL, not a base-64 string.
+  const record = {
+    id: obj.id,
+    name: obj.name || 'untitled',
+    type: obj.type || 'image',
+    dataUrl: obj.dataUrl,   // external URL
+    size: obj.size || 0,
+    createdAt: Date.now()
+  };
+  if(!fbDb) return idbPut(record);
+  if(!isAuthed()) throw new Error('Not signed in as admin — save rejected.');
+  await fbDb.collection(MEDIA_COLLECTION).doc(record.id).set(record);
+  // Also keep a local copy so the library works offline
+  if(mediaDB) idbPut(record).catch(()=>{});
+  return record;
+}
+async function dbGetAll(){
+  if(fbDb){
+    try{
+      const snap = await fbDb.collection(MEDIA_COLLECTION).orderBy('createdAt','desc').get();
+      return snap.docs.map(d=>d.data());
+    }catch(e){ console.error('dbGetAll Firestore failed, falling back to IndexedDB', e); }
+  }
+  return idbGetAll();
+}
+async function dbDelete(id){
+  if(!fbDb) return idbDelete(id);
+  if(!isAuthed()) throw new Error('Not signed in as admin — delete rejected.');
+  // Only delete the Firestore metadata record — there is no Storage file.
+  await fbDb.collection(MEDIA_COLLECTION).doc(id).delete();
+  if(mediaDB) idbDelete(id).catch(()=>{});
+}
+
 
 // --------- APPLY STATE TO DOM ---------
 function applyState(s){
@@ -976,7 +1137,6 @@ const capsWarning  = document.getElementById('capsWarning');
 pwToggle.addEventListener('click',()=>{ const s=loginPassword.type==='text'; loginPassword.type=s?'password':'text'; pwToggle.textContent=s?'SHOW':'HIDE'; });
 loginPassword.addEventListener('keyup',e=>{ if(typeof e.getModifierState==='function') capsWarning.classList.toggle('show', e.getModifierState('CapsLock')); });
 
-function isAuthed(){ return sessionStorage.getItem(AUTH_KEY)==='true'; }
 function openLogin(msg){
   loginOverlay.classList.add('open');
   loginError.textContent = msg||'Invalid email or password.';
@@ -989,17 +1149,35 @@ function closeLogin(){ loginOverlay.classList.remove('open'); loginError.classLi
 loginForm.addEventListener('submit', e=>{
   e.preventDefault();
   if(Date.now()<lockedUntil){ openLogin('Too many failed attempts. Try again in a few seconds.'); return; }
-  const email=loginEmail.value.trim().toLowerCase(), pw=loginPassword.value.trim();
-  if(email===ADMIN_EMAIL.toLowerCase()&&pw===ADMIN_PASSWORD){
-    failedAttempts=0; sessionStorage.setItem(AUTH_KEY,'true'); closeLogin(); openPanel();
-  } else {
-    failedAttempts++;
-    if(failedAttempts>=MAX_ATTEMPTS){
-      lockedUntil=Date.now()+LOCKOUT_MS; loginSubmit.disabled=true;
-      openLogin('Too many failed attempts. Try again in 30 seconds.');
-      setTimeout(()=>{ loginSubmit.disabled=false; failedAttempts=0; },LOCKOUT_MS);
-    } else { openLogin('Invalid email or password.'); }
-  }
+  if(!fbAuth){ openLogin('Firebase Auth is not configured yet — paste your Firebase config in the script to enable admin login.'); return; }
+  const email = loginEmail.value.trim(), pw = loginPassword.value;
+  loginSubmit.disabled = true; loginSubmit.textContent = 'Signing in…';
+  fbAuth.signInWithEmailAndPassword(email, pw)
+    .then(cred=>{
+      if((cred.user.email||'').toLowerCase() !== ADMIN_EMAIL.toLowerCase()){
+        fbAuth.signOut();
+        failedAttempts++;
+        openLogin('This account is not authorized as admin.');
+        return;
+      }
+      failedAttempts = 0;
+      closeLogin();
+      openPanel();
+    })
+    .catch(()=>{
+      failedAttempts++;
+      if(failedAttempts>=MAX_ATTEMPTS){
+        lockedUntil = Date.now()+LOCKOUT_MS;
+        openLogin('Too many failed attempts. Try again in 30 seconds.');
+        setTimeout(()=>{ failedAttempts=0; }, LOCKOUT_MS);
+      } else {
+        openLogin('Invalid email or password.');
+      }
+    })
+    .finally(()=>{
+      loginSubmit.disabled  = Date.now() < lockedUntil;
+      loginSubmit.textContent = 'Sign in';
+    });
 });
 loginClose.addEventListener('click', closeLogin);
 
@@ -1018,7 +1196,7 @@ function closePanel(){ panel.classList.remove('open'); overlay.classList.remove(
 toggleBtn.addEventListener('click',()=>{ if(panel.classList.contains('open')){ closePanel(); return; } if(isAuthed()){ openPanel(); } else { openLogin(); } });
 closeBtn.addEventListener('click', closePanel);
 overlay.addEventListener('click', closePanel);
-logoutBtn.addEventListener('click',()=>{ sessionStorage.removeItem(AUTH_KEY); closePanel(); });
+logoutBtn.addEventListener('click',()=>{ if(fbAuth) fbAuth.signOut(); closePanel(); });
 
 // Tabs
 document.querySelectorAll('.admin-tab').forEach(tab=>{
@@ -1371,26 +1549,23 @@ function renderProjectMediaGrid(){
   });
 }
 
-// ---- upload zone directly inside the project modal ----
-const peUploadZone = document.getElementById('peUploadZone');
-const peFileInput  = document.getElementById('peFileInput');
-peUploadZone.addEventListener('click',()=>peFileInput.click());
-peUploadZone.addEventListener('dragover', e=>{ e.preventDefault(); peUploadZone.classList.add('drag-over'); });
-peUploadZone.addEventListener('dragleave',()=>peUploadZone.classList.remove('drag-over'));
-peUploadZone.addEventListener('drop', e=>{ e.preventDefault(); peUploadZone.classList.remove('drag-over'); handleProjectFiles(e.dataTransfer.files); });
-peFileInput.addEventListener('change',()=>{ handleProjectFiles(peFileInput.files); peFileInput.value=''; });
-
-async function handleProjectFiles(fileList){
-  for(const file of fileList){
-    const type = file.type.startsWith('image/')? 'image' : file.type.startsWith('video/')? 'video' : 'file';
-    const dataUrl = await readFileAsDataURL(file);
-    const item = { id:uid(), name:file.name, type, size:file.size, dataUrl };
+// ---- add-URL zone directly inside the project modal ----
+document.getElementById('peAddUrlBtn').addEventListener('click', async ()=>{
+  const url  = document.getElementById('peUrlInput').value.trim();
+  const name = document.getElementById('peNameInput').value.trim() || url.split('/').pop() || 'media';
+  const type = document.getElementById('peTypeSelect').value;
+  if(!url){ alert('Please enter a URL.'); return; }
+  const item = { id:uid(), name, type, dataUrl:url, size:0 };
+  try{
     await dbPut(item); // also save to the shared media library so it's reusable elsewhere
     currentProjectMedia.push(item);
-  }
+  }catch(e){ console.error(e); alert('Save failed — please sign in and retry.'); return; }
+  document.getElementById('peUrlInput').value  = '';
+  document.getElementById('peNameInput').value = '';
   renderProjectMediaGrid();
   renderMediaPickerInProject();
-}
+});
+document.getElementById('peUrlInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('peAddUrlBtn').click(); });
 
 // ---- pick (add) existing items from the shared Media Library ----
 async function renderMediaPickerInProject(){
@@ -1423,7 +1598,7 @@ async function renderMediaPickerInProject(){
 }
 
 // =====================================================================
-// MEDIA LIBRARY
+// MEDIA LIBRARY — URL-BASED (no file uploads)
 // =====================================================================
 let mediaFilterType = 'all';
 
@@ -1436,27 +1611,20 @@ document.getElementById('mediaFilter').querySelectorAll('.media-filter-btn').for
   });
 });
 
-const uploadZone = document.getElementById('mediaUploadZone');
-const fileInput  = document.getElementById('mediaFileInput');
-
-uploadZone.addEventListener('click',()=>fileInput.click());
-uploadZone.addEventListener('dragover', e=>{ e.preventDefault(); uploadZone.classList.add('drag-over'); });
-uploadZone.addEventListener('dragleave',()=>uploadZone.classList.remove('drag-over'));
-uploadZone.addEventListener('drop', e=>{ e.preventDefault(); uploadZone.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
-fileInput.addEventListener('change',()=>{ handleFiles(fileInput.files); fileInput.value=''; });
-
-async function handleFiles(fileList){
-  for(const file of fileList){
-    const type = file.type.startsWith('image/')? 'image' : file.type.startsWith('video/')? 'video' : 'file';
-    const dataUrl = await readFileAsDataURL(file);
-    await dbPut({ id:uid(), name:file.name, type, size:file.size, dataUrl });
-  }
-  renderMediaGrid();
-}
-
-function readFileAsDataURL(file){
-  return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=e=>res(e.target.result); fr.onerror=rej; fr.readAsDataURL(file); });
-}
+document.getElementById('mediaAddUrlBtn').addEventListener('click', async ()=>{
+  const url  = document.getElementById('mediaUrlInput').value.trim();
+  const name = document.getElementById('mediaNameInput').value.trim() || url.split('/').pop() || 'media-item';
+  const type = document.getElementById('mediaTypeSelect').value;
+  if(!url){ alert('Please enter a URL.'); return; }
+  try{
+    await dbPut({ id:uid(), name, type, dataUrl:url, size:0 });
+    document.getElementById('mediaUrlInput').value = '';
+    document.getElementById('mediaNameInput').value = '';
+    renderMediaGrid();
+  }catch(e){ console.error(e); alert('Save failed — please sign in and retry.'); }
+});
+// Also allow Enter key in URL field
+document.getElementById('mediaUrlInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('mediaAddUrlBtn').click(); });
 
 async function renderMediaGrid(){
   const grid = document.getElementById('mediaGrid');
@@ -1473,7 +1641,7 @@ async function renderMediaGrid(){
       <button class="media-del" data-id="${esc(f.id)}" title="Delete">✕</button>
     </div>`).join('');
   grid.querySelectorAll('.media-del').forEach(b=>{
-    b.addEventListener('click', async e=>{ e.stopPropagation(); if(!confirm('Delete this file from library?')) return; await dbDelete(b.dataset.id); renderMediaGrid(); });
+    b.addEventListener('click', async e=>{ e.stopPropagation(); if(!confirm('Delete this file from library?')) return; try{ await dbDelete(b.dataset.id); }catch(err){ console.error(err); alert('Delete failed — please sign in again and retry.'); } renderMediaGrid(); });
   });
 }
 
@@ -1552,9 +1720,11 @@ window.hoursState={totalSeconds:4128*3600+6*60};
 // =====================================================================
 // INIT
 // =====================================================================
-openMediaDB().then(()=>{
-  applyState(STATE);
-});
+Promise.all([openMediaDB().catch(e=>console.warn('IndexedDB fallback unavailable', e)), loadStateFromFirebase()])
+  .then(()=>{
+    applyState(STATE);
+    attachRealtimeStateListener(); // keep every visitor's page live-synced from here on
+  });
 </script>
 </body>
 </html>
